@@ -2,15 +2,17 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { apiFault, useI18n } from '@/components/Language';
 
 export default function LoginPage() {
+  const { t, fault } = useI18n();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(null);
 
   async function submit(event) {
     event.preventDefault();
-    setError('');
+    setError(null);
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -18,7 +20,7 @@ export default function LoginPage() {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok || !body.success) {
-      setError(body.error?.message || 'Չհաջողվեց մուտք գործել');
+      setError(apiFault(body) || { key: 'auth.loginFail' });
       return;
     }
     const next = new URLSearchParams(window.location.search).get('next') || '';
@@ -27,13 +29,13 @@ export default function LoginPage() {
 
   return (
     <main className="wrap narrow">
-      <h1>Մուտք</h1>
+      <h1>{t('auth.loginTitle')}</h1>
       <form className="card stack" onSubmit={submit}>
-        <label>Էլ. փոստ<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
-        <label>Գաղտնաբառ<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
-        {error ? <p className="err">{error}</p> : null}
-        <button className="btn" type="submit">Մուտք</button>
-        <Link href="/register">Գրանցվել</Link>
+        <label>{t('auth.email')}<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
+        <label>{t('auth.password')}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+        {error ? <p className="err">{fault(error, 'auth.loginFail')}</p> : null}
+        <button className="btn" type="submit">{t('auth.submit')}</button>
+        <Link href="/register">{t('auth.registerLink')}</Link>
       </form>
     </main>
   );

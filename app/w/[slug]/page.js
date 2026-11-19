@@ -4,8 +4,10 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Gallery from '@/components/Gallery';
 import { formatDate } from '@/lib/format';
+import { apiFault, useI18n } from '@/components/Language';
 
 export default function GuestPage() {
+  const { t, lang, fault } = useI18n();
   const { slug } = useParams();
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -14,7 +16,7 @@ export default function GuestPage() {
   const [photos, setPhotos] = useState([]);
   const [flags, setFlags] = useState({ allowDownloads: true, allowSharing: true, count: 0 });
   const [consent, setConsent] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     let ignore = false;
@@ -50,19 +52,19 @@ export default function GuestPage() {
   }
 
   async function enableCamera() {
-    setError('');
+    setError(null);
     try {
       streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
       setStep('camera');
     } catch {
-      setError('Տեսախցիկը հասանելի չէ։ Կարող եք վերբեռնել սելֆի։');
+      setError({ key: 'guest.cameraOff' });
     }
   }
 
   async function sendSelfie(blob) {
     stop();
     setStep('searching');
-    setError('');
+    setError(null);
     const body = new FormData();
     body.append('slug', slug);
     body.append('consent', 'yes');
@@ -70,7 +72,7 @@ export default function GuestPage() {
     const res = await fetch('/api/guest/selfie', { method: 'POST', body });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.success) {
-      setError(data.error?.message || 'Չհաջողվեց');
+      setError(apiFault(data) || { key: 'guest.fail' });
       setStep('intro');
       return;
     }
@@ -83,6 +85,10 @@ export default function GuestPage() {
 
   async function capture() {
     const video = videoRef.current;
+    if (!video?.videoWidth) {
+      setError({ key: 'guest.cameraWait' });
+      return;
+    }
     const canvas = document.createElement('canvas');
     const scale = Math.min(1, 900 / (video.videoWidth || 900));
     canvas.width = Math.round((video.videoWidth || 640) * scale);
@@ -98,47 +104,57 @@ export default function GuestPage() {
     if (file) await sendSelfie(file);
   }
 
-  if (step === 'loading') return <main className="wrap narrow"><p>Բացում ենք…</p></main>;
-  if (step === 'missing') return <main className="wrap narrow"><h1>Ալբոմը չի գտնվել</h1></main>;
+  if (step === 'loading') return <main className="wrap narrow guest-page"><p>{t('admin.loading')}</p></main>;
+  if (step === 'missing') return <main className="wrap narrow guest-page"><h1>{t('guest.missing')}</h1></main>;
   const ready = info?.ready > 0;
 
   return (
-    <main className={step === 'gallery' ? 'wrap' : 'wrap narrow'}>
-      <p className="eyebrow">{formatDate(info?.date)}</p>
+    <main className={`${step === 'gallery' ? 'wrap' : 'wrap narrow'} guest-page`}>
+      <p className="eyebrow">{formatDate(info?.date, lang)}</p>
       <h1>{info?.couple}</h1>
       {step === 'intro' || step === 'camera' ? (
         <div className="stack">
-          <p className="lead">Գտիր քո լուսանկարները</p>
-          <p className="note">Ձեր սելֆին օգտագործվում է այս առիթի լուսանկարներում ձեզ գտնելու համար։ Ձեր լուսանկարը և դեմքի տվյալները կօգտագործվեն միայն այս նպատակով։ Սելֆին չի պահվում։</p>
-          <label className="note"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> Համաձայն եմ</label>
-          {!ready ? <p className="muted">Լուսանկարները դեռ պատրաստ չեն։ Մի փոքր հետո նորից փորձեք։</p> : null}
-          {info?.pending > 0 && ready ? <p className="muted">Մի մասը դեռ մշակվում է։</p> : null}
+          <p className="lead">{t('guest.find')}</p>
+          <p className="note">{t('guest.privacy')}</p>
+          <label className="note desk-only"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> {t('guest.consent')}</label>
+          <label className="note check phone-only"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> {t('guest.consent')}</label>
+          {!ready ? <p className="muted">{t('guest.notReady')}</p> : null}
+          {info?.pending > 0 && ready ? <p className="muted">{t('guest.partial')}</p> : null}
           {step === 'camera' ? (
-            <>
+            <div className="phone-camera">
               <video ref={videoRef} autoPlay playsInline muted className="preview" />
-              <p className="lead">Նայեք տեսախցիկին և արեք սելֆի</p>
-              <button className="btn" type="button" onClick={capture}>Սելֆի անել</button>
-            </>
+              <p className="lead desk-only">{t('guest.look')}</p>
+              <button className="btn desk-only" type="button" onClick={capture}>{t('guest.capture')}</button>
+              <button className="shutter phone-only" type="button" onClick={capture} aria-label={t('guest.capture')} />
+            </div>
           ) : (
-            <button className="btn" type="button" onClick={enableCamera} disabled={!ready || !consent}>Անել սելֆի</button>
+            <>
+              <button className="btn desk-only" type="button" onClick={enableCamera} disabled={!ready || !consent}>{t('guest.start')}</button>
+              <label className="muted desk-only">{t('guest.upload')}
+                <input type="file" accept="image/*" capture="user" onChange={onFile} disabled={!ready || !consent} />
+              </label>
+              <label className="btn phone-only">
+                {t('guest.capture')}
+                <input className="file-input" type="file" accept="image/*" capture="user" onChange={onFile} disabled={!ready || !consent} />
+              </label>
+              <button className="btn secondary phone-only" type="button" onClick={enableCamera} disabled={!ready || !consent}>{t('guest.screen')}</button>
+            </>
           )}
-          <label className="muted">Կամ վերբեռնեք սելֆի
-            <input type="file" accept="image/*" capture="user" onChange={onFile} disabled={!ready || !consent} />
-          </label>
-          {error ? <p className="err">{error}</p> : null}
+          {step === 'camera' ? <button className="btn secondary phone-only" type="button" onClick={() => { stop(); setStep('intro'); }}>{t('guest.close')}</button> : null}
+          {error ? <p className="err">{fault(error, 'guest.fail')}</p> : null}
         </div>
       ) : null}
-      {step === 'searching' ? <div className="stack"><div className="pulse" /><h2>Փնտրում ենք ձեր լուսանկարները...</h2></div> : null}
+      {step === 'searching' ? <div className="stack"><div className="pulse" /><h2>{t('guest.searching')}</h2></div> : null}
       {step === 'empty' ? (
         <div className="stack">
-          <h2>Ձեր լուսանկարները չգտնվեցին</h2>
-          <button className="btn" type="button" onClick={() => setStep('intro')}>Նոր սելֆի</button>
+          <h2>{t('guest.empty')}</h2>
+          <button className="btn" type="button" onClick={() => setStep('intro')}>{t('guest.again')}</button>
         </div>
       ) : null}
       {step === 'gallery' ? (
         <div className="stack">
-          <Gallery photos={photos} headline={`Գտանք ${flags.count} լուսանկար`} allowDownloads={flags.allowDownloads} allowSharing={flags.allowSharing} />
-          <button className="btn secondary" type="button" onClick={() => setStep('intro')}>Նոր սելֆի</button>
+          <Gallery photos={photos} headline={t('guest.found', { count: flags.count })} allowDownloads={flags.allowDownloads} allowSharing={flags.allowSharing} />
+          <button className="btn secondary" type="button" onClick={() => setStep('intro')}>{t('guest.again')}</button>
         </div>
       ) : null}
     </main>

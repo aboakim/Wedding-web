@@ -4,12 +4,15 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { formatMoney, occasionLabel, occasionTitle, photoLimit, planFeatures } from '@/lib/format';
+import { apiFault, useI18n } from '@/components/Language';
+import { orderStatus, planPoint } from '@/lib/i18n';
 
 export default function OrderPage() {
+  const { t, lang, fault } = useI18n();
   const { id } = useParams();
   const [order, setOrder] = useState(null);
   const [plans, setPlans] = useState([]);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [number, setNumber] = useState('');
   const [expiry, setExpiry] = useState('');
@@ -24,10 +27,10 @@ export default function OrderPage() {
       return;
     }
     if (!body.success) {
-      setError(body.error?.message || 'Պատվերը չի գտնվել');
+      setError(apiFault(body) || { key: 'pay.missing' });
       return;
     }
-    setError('');
+    setError(null);
     setOrder(body.data);
   }
 
@@ -43,7 +46,7 @@ export default function OrderPage() {
   async function choose(planId) {
     if (!order || order.plan_id === planId || busy) return;
     setBusy(true);
-    setError('');
+    setError(null);
     const res = await fetch(`/api/orders/${id}/plan`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -52,7 +55,7 @@ export default function OrderPage() {
     const body = await res.json().catch(() => ({}));
     setBusy(false);
     if (!body.success) {
-      setError(body.error?.message || 'Փաթեթը չփոխվեց');
+      setError(apiFault(body) || { key: 'pay.planFail' });
       return;
     }
     await load();
@@ -76,7 +79,7 @@ export default function OrderPage() {
   async function pay(event) {
     event.preventDefault();
     setBusy(true);
-    setError('');
+    setError(null);
     const res = await fetch('/api/payments/create', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -89,7 +92,7 @@ export default function OrderPage() {
     setBusy(false);
     setCvv('');
     if (!body.success) {
-      setError(body.error?.message || 'Վճարումը չհաջողվեց');
+      setError(apiFault(body) || { key: 'pay.fail' });
       return;
     }
     setNumber('');
@@ -105,13 +108,14 @@ export default function OrderPage() {
     }));
   }
 
-  if (!order && !error) return <main className="wrap narrow"><p>Բացում ենք…</p></main>;
+  if (!order && !error) return <main className="wrap narrow"><p>{t('admin.loading')}</p></main>;
+  const cardLine = order?.card_last4 ? `${order.card_brand || t('pay.card')} •••• ${order.card_last4}` : '';
 
   return (
     <main className="wrap mid">
-      <p className="eyebrow">Վճարում</p>
-      <h1>{order ? `${formatMoney(order.amount, order.currency)}` : 'Պատվեր'}</h1>
-      <p className="muted">Ընտրեք փաթեթը։ Գինը և նկարների քանակը այս առիթի համար են՝ {occasionTitle(order?.occasion)}։</p>
+      <p className="eyebrow">{t('pay.eyebrow')}</p>
+      <h1>{order ? `${formatMoney(order.amount, order.currency, lang)}` : t('pay.order')}</h1>
+      <p className="muted">{t('pay.lead', { name: occasionTitle(order?.occasion, lang) })}</p>
       <div className="stack">
         {plans.map((plan) => {
           const features = planFeatures(plan);
@@ -124,48 +128,35 @@ export default function OrderPage() {
                   <input type="radio" name="plan" checked={selected} onChange={() => choose(plan.id)} />
                   {' '}<b>{plan.name}</b>
                 </span>
-                <b>{formatMoney(plan.price, plan.currency)}</b>
+                <b>{formatMoney(plan.price, plan.currency, lang)}</b>
               </span>
-              <span className="muted">/ {occasionLabel(order?.occasion).toLowerCase()}</span>
-              <b>{photoLimit({ ...plan, features })}</b>
+              <span className="muted">{t('new.per', { name: occasionLabel(order?.occasion, lang).toLowerCase() })}</span>
+              <b>{photoLimit({ ...plan, features }, lang)}</b>
               <ul>
-                {points.map((point) => <li key={point}>{point}</li>)}
+                {points.map((point) => <li key={point}>{planPoint(lang, point)}</li>)}
               </ul>
             </label>
           );
         })}
         <div className="card stack">
-          <p>Կարգավիճակ՝ <b>{statusName(order?.status)}</b></p>
-          {order?.status === 'PAID' ? <p className="note">Վճարումը հաստատված է{order.card_last4 ? ` · ${order.card_brand || 'Քարտ'} •••• ${order.card_last4}` : ''}։</p> : <p className="muted">Գումարը վերցվում է պատվերից։ Քարտի համարը չի պահվում։ Հաստատումը գալիս է միայն ստուգումից հետո։</p>}
-          {error ? <p className="err">{error}</p> : null}
+          <p>{t('pay.status')} <b>{orderStatus(lang, order?.status)}</b></p>
+          {order?.status === 'PAID' ? <p className="note">{t('pay.paid', { card: cardLine })}</p> : <p className="muted">{t('pay.note')}</p>}
+          {error ? <p className="err">{fault(error, 'pay.fail')}</p> : null}
           {order && order.status !== 'PAID' && order.status !== 'REFUNDED' ? (
             <form className="stack" onSubmit={pay}>
-              <label>Քարտի համար<input inputMode="numeric" autoComplete="cc-number" placeholder="4111 1111 1111 1111" value={number} onChange={(event) => setNumber(groupCard(event.target.value))} required /></label>
-              <label>Անունը քարտի վրա<input autoComplete="cc-name" value={holder} onChange={(event) => setHolder(event.target.value)} required /></label>
+              <label>{t('pay.number')}<input inputMode="numeric" autoComplete="cc-number" placeholder="4111 1111 1111 1111" value={number} onChange={(event) => setNumber(groupCard(event.target.value))} required /></label>
+              <label>{t('pay.holder')}<input autoComplete="cc-name" value={holder} onChange={(event) => setHolder(event.target.value)} required /></label>
               <div className="row">
-                <label>Ժամկետ<input inputMode="numeric" autoComplete="cc-exp" placeholder="ԱԱ/ՏՏ" value={expiry} onChange={(event) => setExpiry(groupExpiry(event.target.value))} required /></label>
-                <label>CVV<input inputMode="numeric" autoComplete="cc-csc" placeholder="123" value={cvv} onChange={(event) => setCvv(event.target.value.replace(/\D/g, '').slice(0, 3))} required /></label>
+                <label>{t('pay.expiry')}<input inputMode="numeric" autoComplete="cc-exp" placeholder={t('pay.expiryHint')} value={expiry} onChange={(event) => setExpiry(groupExpiry(event.target.value))} required /></label>
+                <label>{t('pay.cvv')}<input inputMode="numeric" autoComplete="cc-csc" placeholder="123" value={cvv} onChange={(event) => setCvv(event.target.value.replace(/\D/g, '').slice(0, 3))} required /></label>
               </div>
-              <p className="muted">Փորձնական քարտ՝ 4111 1111 1111 1111, ցանկացած ապագա ժամկետ և 3 նիշ CVV։</p>
-              <button className="btn" type="submit" disabled={busy}>Վճարել {formatMoney(order.amount, order.currency)}</button>
+              <p className="muted">{t('pay.test')}</p>
+              <button className="btn" type="submit" disabled={busy}>{t('pay.button', { money: formatMoney(order.amount, order.currency, lang) })}</button>
             </form>
           ) : null}
-          {order?.status === 'PAID' && order.wedding_id ? <Link className="btn" href={`/admin/weddings/${order.wedding_id}`}>Բացել ալբոմը</Link> : null}
+          {order?.status === 'PAID' && order.wedding_id ? <Link className="btn" href={`/admin/weddings/${order.wedding_id}`}>{t('pay.open')}</Link> : null}
         </div>
       </div>
     </main>
   );
-}
-
-function statusName(status) {
-  const names = {
-    PENDING: 'Սպասում է',
-    PAYMENT_STARTED: 'Վճարումը սկսված է',
-    PAID: 'Վճարված է',
-    FAILED: 'Չհաջողվեց',
-    CANCELLED: 'Չեղարկված է',
-    REFUND_PENDING: 'Վերադարձը սպասում է',
-    REFUNDED: 'Վերադարձված է',
-  };
-  return names[status] || status;
 }

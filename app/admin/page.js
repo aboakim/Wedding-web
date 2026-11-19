@@ -2,16 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { occasionTitle } from '@/lib/format';
-
-function gb(value) {
-  const n = Number(value || 0);
-  if (!n) return '0 ՄԲ';
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} ԳԲ`;
-  return `${Math.max(1, Math.round(n / 1024 ** 2))} ՄԲ`;
-}
+import { formatBytes, occasionTitle } from '@/lib/format';
+import { useI18n } from '@/components/Language';
+import { orderStatus, statusLabel } from '@/lib/i18n';
 
 export default function AdminHome() {
+  const { t, lang } = useI18n();
   const [rows, setRows] = useState(null);
   const [email, setEmail] = useState('');
 
@@ -39,25 +35,25 @@ export default function AdminHome() {
     <main className="wrap">
       <div className="top">
         <div>
-          <p className="eyebrow">Իմ առիթները</p>
-          <h1>Վահանակ</h1>
+          <p className="eyebrow">{t('admin.eyebrow')}</p>
+          <h1>{t('admin.title')}</h1>
           <p className="muted">{email}</p>
         </div>
         <div className="row">
-          <Link className="btn" href="/admin/new">Նոր առիթ</Link>
-          <button className="btn secondary" type="button" onClick={logout}>Ելք</button>
+          <Link className="btn" href="/admin/new">{t('admin.new')}</Link>
+          <button className="btn secondary" type="button" onClick={logout}>{t('admin.logout')}</button>
         </div>
       </div>
-      {!rows ? <p>Բացում ենք…</p> : null}
+      {!rows ? <p>{t('admin.loading')}</p> : null}
       <div className="list">
         {rows?.map((row) => (
           <Link key={row.id} className="wedding" href={row.order_status === 'PAID' ? `/admin/weddings/${row.id}` : `/admin/orders/${row.order_id}`}>
             <span>
               <b>{row.couple}</b>
-              <span className="muted"> · {occasionTitle(row.occasion)}</span>
-              <span className="muted"> {row.processing_status} · {row.order_status}</span>
+              <span className="muted"> · {occasionTitle(row.occasion, lang)}</span>
+              <span className="muted"> {statusLabel(lang, row.processing_status)} · {orderStatus(lang, row.order_status)}</span>
             </span>
-            <span className="muted">{row.processed}/{row.photos} մշակված · {row.guests} հյուր · {gb(row.storage_bytes)}</span>
+            <span className="muted">{row.processed}/{row.photos} {t('admin.processed')} · {t('admin.guestsLine', { count: row.guests })} · {formatBytes(row.storage_bytes, lang)}</span>
           </Link>
         ))}
       </div>

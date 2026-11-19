@@ -2,15 +2,17 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { apiFault, useI18n } from '@/components/Language';
 
 export default function RegisterPage() {
+  const { t, fault } = useI18n();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(null);
 
   async function submit(event) {
     event.preventDefault();
-    setError('');
+    setError(null);
     const res = await fetch('/api/auth/register', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -18,7 +20,7 @@ export default function RegisterPage() {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok || !body.success) {
-      setError(body.error?.message || 'Չհաջողվեց գրանցվել');
+      setError(apiFault(body) || { key: 'auth.registerFail' });
       return;
     }
     const next = new URLSearchParams(window.location.search).get('next') || '';
@@ -27,13 +29,13 @@ export default function RegisterPage() {
 
   return (
     <main className="wrap narrow">
-      <h1>Գրանցում</h1>
+      <h1>{t('auth.registerTitle')}</h1>
       <form className="card stack" onSubmit={submit}>
-        <label>Էլ. փոստ<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
-        <label>Գաղտնաբառ<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} required /></label>
-        {error ? <p className="err">{error}</p> : null}
-        <button className="btn" type="submit">Ստեղծել հաշիվ</button>
-        <Link href="/login">Արդեն ունեմ հաշիվ</Link>
+        <label>{t('auth.email')}<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
+        <label>{t('auth.password')}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} required /></label>
+        {error ? <p className="err">{fault(error, 'auth.registerFail')}</p> : null}
+        <button className="btn" type="submit">{t('auth.create')}</button>
+        <Link href="/login">{t('auth.have')}</Link>
       </form>
     </main>
   );

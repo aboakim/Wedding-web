@@ -3,8 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { formatDate } from '@/lib/format';
+import { useI18n } from '@/components/Language';
 
 export default function WeddingAdmin() {
+  const { t, lang } = useI18n();
   const { id } = useParams();
   const router = useRouter();
   const [data, setData] = useState(null);
@@ -22,11 +24,11 @@ export default function WeddingAdmin() {
     async function tick() {
       const res = await fetch(`/api/weddings/${id}`);
       if (res.status === 401) { router.push('/admin'); return; }
-      if (!res.ok) { setError('Հարսանիքը չի գտնվել'); return; }
+      if (!res.ok) { setError('missing'); return; }
       const json = await res.json();
       if (stop) return;
       setData(json);
-      if (json.stats.pending > 0) timer = setTimeout(tick, 2000);
+      if (json.stats?.pending > 0) timer = setTimeout(tick, 2000);
     }
     fetch(`/api/weddings/${id}/process`, { method: 'POST' });
     tick();
@@ -63,7 +65,7 @@ export default function WeddingAdmin() {
   }
 
   async function remove() {
-    if (!confirm('Ջնջել հարսանիքը, լուսանկարները և դեմքերի տվյալները՞')) return;
+    if (!confirm(t('legacy.ask'))) return;
     await fetch(`/api/weddings/${id}`, { method: 'DELETE' });
     router.push('/admin');
   }
@@ -73,45 +75,45 @@ export default function WeddingAdmin() {
     setRev((value) => value + 1);
   }
 
-  if (error) return <main className="wrap"><p className="err">{error}</p></main>;
-  if (!data) return <main className="wrap"><p>Բացում ենք…</p></main>;
+  if (error) return <main className="wrap"><p className="err">{t('legacy.missing')}</p></main>;
+  if (!data) return <main className="wrap"><p>{t('admin.loading')}</p></main>;
 
   const link = `${origin}/w/${data.slug}`;
   const pct = upload ? Math.round((upload.done / upload.total) * 100) : 0;
-  const preview = data.photos.filter((photo) => photo.status !== 'error').slice(0, 24);
+  const preview = (data.photos || []).filter((photo) => photo.status !== 'error').slice(0, 24);
 
   return (
     <main className="wrap">
       <div className="top">
-        <a className="brand" href="/admin">Բոլոր հարսանիքները</a>
-        <button className="btn secondary" type="button" onClick={remove}>Ջնջել</button>
+        <a className="brand" href="/admin">{t('legacy.all')}</a>
+        <button className="btn secondary" type="button" onClick={remove}>{t('legacy.delete')}</button>
       </div>
       <p className="eyebrow">{data.name}</p>
       <h1>{data.couple}</h1>
-      <p className="muted">{formatDate(data.date)}</p>
+      <p className="muted">{formatDate(data.date, lang)}</p>
       <div className="linkbox">
         <code>{link}</code>
-        <button className="btn" type="button" onClick={copy}>{copied ? 'Պատճենված է' : 'Պատճենել'}</button>
+        <button className="btn" type="button" onClick={copy}>{copied ? t('legacy.copied') : t('legacy.copy')}</button>
       </div>
       <div className="stats" style={{ marginTop: 16 }}>
-        <div className="stat"><b>{data.stats.photos}</b><span className="muted">լուսանկար</span></div>
-        <div className="stat"><b>{data.stats.indexed}</b><span className="muted">մշակված</span></div>
-        <div className="stat"><b>{data.stats.faces}</b><span className="muted">դեմք</span></div>
+        <div className="stat"><b>{data.stats.photos}</b><span className="muted">{t('legacy.photos')}</span></div>
+        <div className="stat"><b>{data.stats.indexed}</b><span className="muted">{t('legacy.processed')}</span></div>
+        <div className="stat"><b>{data.stats.faces}</b><span className="muted">{t('legacy.faces')}</span></div>
       </div>
-      <p className="note">Վերբեռնումը չի սպասում դեմքերի մշակմանը։ Սելֆիները չեն պահվում։ Լուսանկարներն ու դեմքերի կոդերը մնում են, մինչև հարսանիքը ջնջեք։ Հյուրը չի կարող բացել ամբողջ ալբոմը։</p>
+      <p className="note">{t('legacy.note')}</p>
       <label className="drop">
         <input type="file" accept="image/*" multiple hidden onChange={onFiles} />
-        <strong>Վերբեռնել լուսանկարներ</strong>
-        <span className="muted">Կարելի է ընտրել շատ ֆայլեր միանգամից</span>
+        <strong>{t('legacy.upload')}</strong>
+        <span className="muted">{t('legacy.many')}</span>
       </label>
       {upload ? (
         <div>
           <div className="bar"><span style={{ width: `${pct}%` }} /></div>
-          <p className="muted">{upload.done}/{upload.total} վերբեռնված{upload.failed ? ` · ${upload.failed} սխալ` : ''}</p>
+          <p className="muted">{t('legacy.progress', { done: upload.done, total: upload.total, failed: upload.failed || 0 })}</p>
         </div>
       ) : null}
-      {data.stats.pending > 0 ? <p className="muted">Դեմքերը մշակվում են հետին պլանում․ {data.stats.pending} սպասում է։ Սերվերը պետք է միացած մնա։</p> : null}
-      {data.stats.errors > 0 ? <button className="btn secondary" type="button" onClick={retry}>Կրկնել {data.stats.errors} սխալը</button> : null}
+      {data.stats.pending > 0 ? <p className="muted">{t('legacy.pending', { count: data.stats.pending })}</p> : null}
+      {data.stats.errors > 0 ? <button className="btn secondary" type="button" onClick={retry}>{t('legacy.retry', { count: data.stats.errors })}</button> : null}
       {data.errors?.length ? data.errors.map((item) => <p className="err" key={item.id}>{item.error}</p>) : null}
       <div className="mini">
         {preview.map((photo) => <img key={photo.id} src={`/api/media/${photo.id}?thumb=1`} alt="" />)}
