@@ -8,6 +8,7 @@ import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 import cv2
 import numpy as np
@@ -18,6 +19,8 @@ PORT = 53721
 MAX_BODY = 20 * 1024 * 1024
 DET_ALBUM = 0.45
 DET_SELFIE = 0.55
+MIN_PICK_SIDE = 40  # px in the (max 1600px) image; smaller faces make poor references
+MAX_PICK = 12
 
 lock = threading.Lock()
 engine = None
@@ -75,13 +78,53 @@ def select_faces(found, mode):
     return found[:30], None
 
 
-def embed(raw, mode):
+def pick_candidates(found):
+    """Faces a guest may choose as their reference, left to right."""
+    faces = [f for f in found if float(f.det_score) >= DET_SELFIE
+             and min(float(f.bbox[2] - f.bbox[0]), float(f.bbox[3] - f.bbox[1])) >= MIN_PICK_SIDE]
+    faces.sort(key=lambda f: float(f.bbox[0] + f.bbox[2]))
+    return faces[:MAX_PICK]
+
+
+def normalized_box(face, shape):
+    h, w = shape[:2]
+    x1, y1, x2, y2 = [float(v) for v in face.bbox]
+    return [round(max(0.0, x1 / w), 4), round(max(0.0, y1 / h), 4), round(min(1.0, x2 / w), 4), round(min(1.0, y2 / h), 4)]
+
+
+def face_at(faces, shape, point):
+    """The candidate whose box contains the point, else the nearest centre within 0.15."""
+    px, py = point
+    best, dist = None, 0.15
+    for face in faces:
+        x1, y1, x2, y2 = normalized_box(face, shape)
+        if x1 <= px <= x2 and y1 <= py <= y2:
+            return face
+        d = ((px - (x1 + x2) / 2) ** 2 + (py - (y1 + y2) / 2) ** 2) ** 0.5
+        if d < dist:
+            best, dist = face, d
+    return best
+
+
+def embed(raw, mode, point=None):
     image = decode(raw)
     if image is None:
         return {"ok": False, "error": "image"}
     with lock:
-        found = engine.get(image)
-    found, error = select_faces(found, mode)
+        detected = engine.get(image)
+    if mode == "selfie" and point is not None:
+        chosen = face_at(pick_candidates(detected), image.shape, point)
+        if chosen is None:
+            return {"ok": False, "error": "none"}
+        found, error = [chosen], None
+    else:
+        found, error = select_faces(detected, mode)
+    if error == "multiple":
+        # Let the guest choose: return boxes only (normalized), never image data.
+        candidates = pick_candidates(detected)
+        if len(candidates) >= 2:
+            return {"ok": False, "error": "multiple",
+                    "faces": [normalized_box(f, image.shape) for f in candidates]}
     if error:
         return {"ok": False, "error": error}
     faces = []
@@ -115,9 +158,19 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "error": "size"})
             return
         raw = self.rfile.read(length)
-        mode = "selfie" if "mode=selfie" in self.path else "album"
+        params = parse_qs(urlsplit(self.path).query)
+        mode = "selfie" if params.get("mode", [""])[0] == "selfie" else "album"
+        point = None
         try:
-            payload = embed(raw, mode)
+            if "x" in params and "y" in params:
+                point = (float(params["x"][0]), float(params["y"][0]))
+                if not (0.0 <= point[0] <= 1.0 and 0.0 <= point[1] <= 1.0):
+                    raise ValueError("point")
+        except ValueError:
+            self._json(400, {"ok": False, "error": "point"})
+            return
+        try:
+            payload = embed(raw, mode, point)
         except Exception:
             payload = {"ok": False, "error": "engine"}
         self._json(200 if payload.get("ok") else 422, payload)

@@ -11,13 +11,23 @@ export const dynamic = 'force-dynamic';
 
 const SESSION_SECONDS = 45 * 60;
 
+function parsePoint(value) {
+  const match = /^(\d(?:\.\d+)?),(\d(?:\.\d+)?)$/.exec(String(value || ''));
+  if (!match) return undefined;
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : undefined;
+}
+
 export const POST = route(async (req) => {
   const ip = clientIp(req);
-  if (!(await rateLimit(`selfie:${ip}`, 8, 3600))) return fail('RATE', 'Շատ փորձ եղավ։ Փորձեք մի փոքր ուշ։', 429);
+  // 16/h: choosing a face in a group photo costs a second request.
+  if (!(await rateLimit(`selfie:${ip}`, 16, 3600))) return fail('RATE', 'Շատ փորձ եղավ։ Փորձեք մի փոքր ուշ։', 429);
   const form = await req.formData();
   const slug = String(form.get('slug') || '');
   const consent = String(form.get('consent') || '');
   const file = form.get('selfie');
+  const point = parsePoint(form.get('face'));
   if (consent !== 'yes') return fail('CONSENT', 'Շարունակելու համար հաստատեք, որ համաձայն եք։', 400);
   if (!file || typeof file === 'string') return fail('SELFIE', 'Սելֆին չի ուղարկվել։', 400);
   const bytes = Buffer.from(await file.arrayBuffer());
@@ -40,9 +50,12 @@ export const POST = route(async (req) => {
   }
   let embedding;
   try {
-    embedding = await embedSelfie(bytes);
+    embedding = await embedSelfie(bytes, point);
   } catch (error) {
     bytes.fill(0);
+    if (error.code === 'MULTIPLE' && error.faces?.length >= 2) {
+      return fail('MULTIPLE', error.message, 422, { faces: error.faces });
+    }
     return fail('FACE', error.message, 422);
   }
   bytes.fill(0);

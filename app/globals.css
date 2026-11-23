@@ -292,3 +292,9 @@ input[type="text"], input[type="password"], input[type="date"], input[type="emai
   h1 { font-size: clamp(1.7rem, 8vw, 2.4rem); }
   input, select, textarea { font-size: 16px; }
 }
+
+/* Guest face picker: tappable boxes over the guest's own photo (kept in the browser only). */
+.pick-wrap { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
+.pick-wrap img { display: block; max-width: 100%; max-height: 70vh; height: auto; border-radius: 10px; }
+.pick-face { position: absolute; padding: 0; background: transparent; border: 3px solid #fff; border-radius: 12px; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55); cursor: pointer; }
+.pick-face:hover, .pick-face:focus-visible { border-color: #f5b700; outline: none; }
