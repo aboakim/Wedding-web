@@ -5,6 +5,7 @@ code. The same person keeps a close code across different photos.
 """
 
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -29,6 +30,7 @@ def load():
     # avoids inferring attributes nobody asked for.
     app = FaceAnalysis(
         name="buffalo_l",
+        root=os.environ.get("INSIGHTFACE_ROOT", "~/.insightface"),
         allowed_modules=["detection", "recognition"],
         providers=["CPUExecutionProvider"],
     )
@@ -57,24 +59,31 @@ def vector_of(face):
     return [round(float(n), 8) for n in values]
 
 
+def select_faces(found, mode):
+    """Apply the selfie/album face rules. Returns (faces, error)."""
+    if mode == "selfie":
+        found = [face for face in found if float(face.det_score) >= DET_SELFIE]
+        if not found:
+            return [], "none"
+        largest = max(box_area(face) for face in found)
+        found = [face for face in found if box_area(face) >= largest * 0.25]
+        if len(found) > 1:
+            return [], "multiple"
+        return found, None
+    found = [face for face in found if float(face.det_score) >= DET_ALBUM]
+    found.sort(key=box_area, reverse=True)
+    return found[:30], None
+
+
 def embed(raw, mode):
     image = decode(raw)
     if image is None:
         return {"ok": False, "error": "image"}
     with lock:
         found = engine.get(image)
-    if mode == "selfie":
-        found = [face for face in found if float(face.det_score) >= DET_SELFIE]
-        if not found:
-            return {"ok": False, "error": "none"}
-        largest = max(box_area(face) for face in found)
-        found = [face for face in found if box_area(face) >= largest * 0.25]
-        if len(found) > 1:
-            return {"ok": False, "error": "multiple"}
-    else:
-        found = [face for face in found if float(face.det_score) >= DET_ALBUM]
-        found.sort(key=box_area, reverse=True)
-        found = found[:30]
+    found, error = select_faces(found, mode)
+    if error:
+        return {"ok": False, "error": error}
     faces = []
     for face in found:
         vec = vector_of(face)
