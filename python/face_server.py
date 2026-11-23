@@ -24,7 +24,14 @@ engine = None
 
 def load():
     global engine
-    app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+    # Only detection (boxes + 5 keypoints for alignment) and recognition (embedding)
+    # are used. Skipping the landmark and gender/age models saves time per face and
+    # avoids inferring attributes nobody asked for.
+    app = FaceAnalysis(
+        name="buffalo_l",
+        allowed_modules=["detection", "recognition"],
+        providers=["CPUExecutionProvider"],
+    )
     app.prepare(ctx_id=-1, det_size=(640, 640))
     engine = app
 
