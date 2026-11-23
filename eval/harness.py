@@ -8,9 +8,14 @@ Inputs
   --labels   directory with labels_<target>.csv (filename,contains_target,notes)
   --split    eval/split.json; created once (seeded, stratified, by photo) if missing,
              then reused so every change is measured on the same photos.
+Labels have 3 classes (see eval/convert_labels.py): 1 = show in main gallery,
+2 = present but background, 0 = absent. Two tasks are scored:
+  presence  positive = class 1 or 2  (is the matcher finding the person?)
+  show      positive = class 1       (would the main gallery be right?)
 Scoring mirrors lib/match.js: photo score = max cosine over its faces; a photo
 with no detected face can never match (score = -1).
-Thresholds are tuned on the TUNE split only; final numbers are on TEST.
+The threshold is tuned on the TUNE split (presence task) only; final numbers
+are on TEST. "all_labeled" numbers are context only (they include tune photos).
 Outputs go to <run>/metrics/: sweep_<split>.csv, pr_<split>.csv, report.json, pr.png.
 """
 
@@ -49,21 +54,23 @@ def load_labels(folder, key, excluded):
         return None
     out = {}
     for row in csv.DictReader(open(path)):
-        if row["filename"] in excluded or row["contains_target"] not in ("0", "1"):
+        if row["filename"] in excluded or row["contains_target"] not in ("0", "1", "2"):
             continue
         out[row["filename"]] = int(row["contains_target"])
     return out
 
 
-def make_split(path, photos, positive_any, seed=20261123, tune_frac=0.6):
+def make_split(path, photos, stratum, seed=20261123, tune_frac=0.6):
+    """Photo-level split, stratified so each split gets its share of rare classes."""
     rng = random.Random(seed)
-    pos = sorted(p for p in photos if positive_any.get(p))
-    neg = sorted(p for p in photos if not positive_any.get(p))
-    rng.shuffle(pos)
-    rng.shuffle(neg)
-    tune = pos[: round(len(pos) * tune_frac)] + neg[: round(len(neg) * tune_frac)]
-    split = {p: ("tune" if p in set(tune) else "test") for p in photos}
-    path.write_text(json.dumps({"seed": seed, "tune_frac": tune_frac, "split": split}, indent=0, sort_keys=True))
+    tune = set()
+    for key in sorted(set(stratum.values())):
+        group = sorted(p for p in photos if stratum[p] == key)
+        rng.shuffle(group)
+        tune.update(group[: round(len(group) * tune_frac)])
+    split = {p: ("tune" if p in tune else "test") for p in photos}
+    path.write_text(json.dumps({"seed": seed, "tune_frac": tune_frac, "stratified_by": "show > background > absent",
+                                "split": split}, indent=0, sort_keys=True))
     return split
 
 
@@ -132,10 +139,53 @@ def write_csv(path, rows):
         w.writerows(rows)
 
 
+def task_arrays(rows, task):
+    c = np.asarray([r[2] for r in rows])
+    y = (c > 0).astype(int) if task == "presence" else (c == 1).astype(int)
+    s = np.asarray([r[3] for r in rows])
+    pid = np.asarray([r[1] for r in rows])
+    return y, s, pid, c
+
+
+def pr_rows(y, s):
+    order = np.argsort(-s)
+    tp = np.cumsum(y[order] == 1)
+    fp = np.cumsum(y[order] == 0)
+    return [{"threshold": round(float(s[order][i]), 4), "precision": round(float(tp[i] / (tp[i] + fp[i])), 4),
+             "recall": round(float(tp[i] / max(1, y.sum())), 4)} for i in range(len(order))]
+
+
+def task_report(rows, task, tuned_t, labels):
+    y, s, pid, c = task_arrays(rows, task)
+    sw = sweep(y, s)
+    rep = {
+        "positives": int(y.sum()),
+        "at_production_0.40": evaluate(y, s, pid, PRODUCTION_THRESHOLD),
+        "at_tuned": evaluate(y, s, pid, tuned_t),
+        "recall_at_precision_0.95": recall_at_precision(sw, 0.95),
+        "recall_at_precision_0.99": recall_at_precision(sw, 0.99),
+        "precision_at_recall_0.90": precision_at_recall(sw, 0.90),
+        "positives_with_no_detected_face": int(np.sum((y == 1) & (s <= -1.0))),
+        "per_target_at_tuned": {},
+    }
+    if task == "show":
+        # Background photos (class 2) that a single-tier gallery would put in the main gallery.
+        rep["background_in_main_gallery_at_tuned"] = int(np.sum((c == 2) & (s >= tuned_t)))
+        rep["background_total"] = int(np.sum(c == 2))
+    for key in labels:
+        m = np.asarray([r[0] == key for r in rows])
+        if m.any():
+            p, r, f = prf(*confusion(y[m], s[m], tuned_t))
+            tp, fp, fn = confusion(y[m], s[m], tuned_t)
+            rep["per_target_at_tuned"][key] = {"positives": int(y[m].sum()), "tp": tp, "fp": fp, "fn": fn,
+                                               "precision": round(p, 4), "recall": round(r, 4), "f1": round(f, 4)}
+    return rep, sw
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", default="eval/out/baseline")
-    ap.add_argument("--labels", default="eval/out/labels")
+    ap.add_argument("--labels", default="eval/out/labels3")
     ap.add_argument("--targets", default="eval/targets.json")
     ap.add_argument("--split", default="eval/split.json")
     ap.add_argument("--min-precision", type=float, default=TARGET_PRECISION)
@@ -157,82 +207,65 @@ def main():
         split = json.loads(split_path.read_text())["split"]
     else:
         photos = sorted(set().union(*[set(l) for l in labels.values()]))
-        positive_any = {p: any(l.get(p) == 1 for l in labels.values()) for p in photos}
-        split = make_split(split_path, photos, positive_any)
+        def stratum(p):
+            vals = [l.get(p, 0) for l in labels.values()]
+            return "show" if 1 in vals else "background" if 2 in vals else "absent"
+        split = make_split(split_path, photos, {p: stratum(p) for p in photos})
 
-    # Flatten (target, photo) pairs.
     data = {"tune": [], "test": []}
     for key, lab in labels.items():
-        for photo, y in lab.items():
+        for photo, cls in lab.items():
             part = split.get(photo)
-            if part is None:
-                continue
-            data[part].append((key, photo, y, scores[key].get(photo, -1.0)))
+            if part is not None:
+                data[part].append((key, photo, cls, scores[key].get(photo, -1.0)))
+    every = data["tune"] + data["test"]
 
     out = run / "metrics"
     out.mkdir(exist_ok=True)
-    report = {"labels": {k: {"photos": len(v), "positives": sum(v.values())} for k, v in labels.items()},
-              "split": {p: len(rows) for p, rows in data.items()}}
 
-    arrays = {}
-    for part, rows in data.items():
-        y = np.asarray([r[2] for r in rows])
-        s = np.asarray([r[3] for r in rows])
-        pid = np.asarray([r[1] for r in rows])
-        arrays[part] = (y, s, pid, rows)
-        sw = sweep(y, s)
-        write_csv(out / f"sweep_{part}.csv", sw)
-        order = np.argsort(-s)
-        tp = np.cumsum(y[order] == 1)
-        fp = np.cumsum(y[order] == 0)
-        pr = [{"threshold": round(float(s[order][i]), 4), "precision": round(float(tp[i] / (tp[i] + fp[i])), 4),
-               "recall": round(float(tp[i] / max(1, y.sum())), 4)} for i in range(len(order))]
-        write_csv(out / f"pr_{part}.csv", pr)
-
-    y_tune, s_tune, _, _ = arrays["tune"]
-    sw_tune = sweep(y_tune, s_tune)
-    chosen = recall_at_precision(sw_tune, args.min_precision)
+    # Tune on the presence task, tune split only.
+    y_t, s_t, _, _ = task_arrays(data["tune"], "presence")
+    chosen = recall_at_precision(sweep(y_t, s_t), args.min_precision)
     tuned_t = chosen["threshold"] if chosen else PRODUCTION_THRESHOLD
 
-    y, s, pid, rows = arrays["test"]
-    sw_test = sweep(y, s)
-    positives_no_face = int(np.sum((y == 1) & (s <= -1.0)))
-    report["test"] = {
-        "at_production_0.40": evaluate(y, s, pid, PRODUCTION_THRESHOLD),
-        f"at_tuned_threshold (max recall with tune precision >= {args.min_precision})": evaluate(y, s, pid, tuned_t),
-        "recall_at_precision_0.95": recall_at_precision(sw_test, 0.95),
-        "recall_at_precision_0.99": recall_at_precision(sw_test, 0.99),
-        "precision_at_recall_0.90": precision_at_recall(sw_test, 0.90),
-        "positives": int(y.sum()),
-        "positives_with_no_detected_face_in_photo": positives_no_face,
-        "recall_ceiling_if_threshold_were_lowest": round(float(np.mean(s[y == 1] > -1.0)), 4) if y.sum() else None,
-        "per_target_at_tuned": {},
+    report = {
+        "run": str(run),
+        "labels": {k: {"show": sum(v == 1 for v in l.values()), "background": sum(v == 2 for v in l.values()),
+                       "absent": sum(v == 0 for v in l.values())} for k, l in labels.items()},
+        "pairs": {p: len(r) for p, r in data.items()},
+        "tuned_threshold": tuned_t,
+        "tuning_rule": f"max recall on TUNE presence task with precision >= {args.min_precision}",
+        "test": {},
+        "all_labeled_context_only": {},
     }
-    for key in labels:
-        m = np.asarray([r[0] == key for r in rows])
-        if m.any():
-            tp, fp, fn = confusion(y[m], s[m], tuned_t)
-            p, r, f = prf(tp, fp, fn)
-            report["test"]["per_target_at_tuned"][key] = {"tp": tp, "fp": fp, "fn": fn, "precision": round(p, 4),
-                                                         "recall": round(r, 4), "f1": round(f, 4)}
-    report["tuned_threshold"] = tuned_t
+    sweeps = {}
+    for task in ("presence", "show"):
+        report["test"][task], sweeps[("test", task)] = task_report(data["test"], task, tuned_t, labels)
+        report["all_labeled_context_only"][task], _ = task_report(every, task, tuned_t, labels)
+        y, s, _, _ = task_arrays(data["tune"], task)
+        sweeps[("tune", task)] = sweep(y, s)
+        for part in ("tune", "test"):
+            write_csv(out / f"sweep_{task}_{part}.csv", sweeps[(part, task)])
+            y, s, _, _ = task_arrays(data[part], task)
+            write_csv(out / f"pr_{task}_{part}.csv", pr_rows(y, s))
     (out / "report.json").write_text(json.dumps(report, indent=2))
 
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
-    for part, style in (("tune", "--"), ("test", "-")):
-        sw = sweep(*arrays[part][:2])
-        axes[0].plot([r["recall"] for r in sw], [r["precision"] for r in sw], style, label=part)
-        axes[1].plot(SWEEP, [r["precision"] for r in sw], style, label=f"precision ({part})")
-        axes[1].plot(SWEEP, [r["recall"] for r in sw], style, label=f"recall ({part})")
+    for (part, task), sw in sorted(sweeps.items()):
+        style = "-" if part == "test" else "--"
+        axes[0].plot([r["recall"] for r in sw], [r["precision"] for r in sw], style, label=f"{task} ({part})")
+        if part == "test":
+            axes[1].plot(SWEEP, [r["precision"] for r in sw], style, label=f"precision {task}")
+            axes[1].plot(SWEEP, [r["recall"] for r in sw], style, label=f"recall {task}")
     axes[0].set(xlabel="recall", ylabel="precision", title="PR curve (threshold sweep)", xlim=(0, 1.02), ylim=(0, 1.02))
-    axes[0].legend()
+    axes[0].legend(fontsize=8)
     for t, lab in ((PRODUCTION_THRESHOLD, "production 0.40"), (tuned_t, f"tuned {tuned_t:.2f}")):
         axes[1].axvline(t, color="grey", lw=0.8, ls=":")
         axes[1].text(t, 0.02, lab, rotation=90, fontsize=8)
-    axes[1].set(xlabel="cosine threshold", title="Threshold sweep", ylim=(0, 1.02))
+    axes[1].set(xlabel="cosine threshold", title="Threshold sweep (test)", ylim=(0, 1.02))
     axes[1].legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(out / "pr.png", dpi=130)
