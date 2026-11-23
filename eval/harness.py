@@ -33,19 +33,38 @@ PRODUCTION_THRESHOLD = 0.40
 
 
 def load_scores(run, targets):
+    """Per target: {photo: best score} and {photo: row index of the best face}."""
     npz = np.load(run / "faces.npz")
     photos = npz["photo"]
     E = npz["embeddings"]
-    scores = {}
+    scores, best_face = {}, {}
     for key in targets:
         if f"ref_{key}" not in npz:
             continue
         sims = E @ npz[f"ref_{key}"]
-        best = {}
-        for p, s in zip(photos, sims):
-            best[str(p)] = max(best.get(str(p), -1.0), float(s))
-        scores[key] = best
-    return scores
+        best, where = {}, {}
+        for i, (p, s) in enumerate(zip(photos, sims)):
+            if float(s) > best.get(str(p), -2.0):
+                best[str(p)], where[str(p)] = float(s), i
+        scores[key], best_face[key] = best, where
+    return scores, best_face
+
+
+def evaluate_pred(y, pred, pid, n=2000, seed=7):
+    """P/R/F1 for an explicit prediction vector, with photo-resampled 95% CI."""
+    def stats(idx):
+        tp = int(np.sum(pred[idx] & (y[idx] == 1)))
+        fp = int(np.sum(pred[idx] & (y[idx] == 0)))
+        fn = int(np.sum(~pred[idx] & (y[idx] == 1)))
+        return (tp, fp, fn), prf(tp, fp, fn)
+    (tp, fp, fn), (p, r, f) = stats(np.arange(len(y)))
+    rng = np.random.default_rng(seed)
+    uniq = np.unique(pid)
+    index = {u: np.where(pid == u)[0] for u in uniq}
+    boot = np.asarray([stats(np.concatenate([index[u] for u in rng.choice(uniq, len(uniq))]))[1] for _ in range(n)])
+    lo, hi = np.percentile(boot, [2.5, 97.5], axis=0)
+    return {"tp": tp, "fp": fp, "fn": fn, "precision": round(p, 4), "recall": round(r, 4), "f1": round(f, 4),
+            "ci95": {m: [round(float(lo[i]), 3), round(float(hi[i]), 3)] for i, m in enumerate(["precision", "recall", "f1"])}}
 
 
 def load_labels(folder, key, excluded):
@@ -182,6 +201,53 @@ def task_report(rows, task, tuned_t, labels):
     return rep, sw
 
 
+def two_sections(run, data, match_t, feature, fixed_cutoff=None):
+    """Main gallery = score >= match_t AND feature(best face) >= cutoff; the rest of
+    the matches go to the second section. Cutoff tuned on TUNE (main-gallery F1;
+    middle of the best-F1 range) unless fixed."""
+    q = [float(r[feature]) for r in csv.DictReader(open(run / "face_quality.csv"))]
+
+    def arrays(rows):
+        c = np.asarray([r[2] for r in rows])
+        s = np.asarray([r[3] for r in rows])
+        v = np.asarray([q[r[4]] if r[4] is not None else -1.0 for r in rows])
+        return c, s, v, np.asarray([r[1] for r in rows])
+
+    def main_pred(s, v, cut):
+        return (s >= match_t) & (v >= cut)
+
+    c, s, v, _ = arrays(data["tune"])
+    grid = np.round(np.arange(0, 300.01, 0.5), 1)
+    f1s = np.asarray([prf(*confusion_pred((c == 1).astype(int), main_pred(s, v, g)))[2] for g in grid])
+    best = np.flatnonzero(np.isclose(f1s, f1s.max()))
+    run_end = best[0]
+    while run_end + 1 in set(best):
+        run_end += 1
+    cutoff = fixed_cutoff if fixed_cutoff is not None else float((grid[best[0]] + grid[run_end]) / 2)
+
+    out = {"feature": feature, "match_threshold": match_t, "cutoff": cutoff,
+           "cutoff_rule": "fixed" if fixed_cutoff is not None else
+           f"middle of best TUNE main-F1 range [{grid[best[0]]}, {grid[run_end]}]"}
+    for part in ("tune", "test"):
+        c, s, v, pid = arrays(data[part])
+        main = main_pred(s, v, cutoff)
+        second = (s >= match_t) & ~main
+        out[part] = {
+            "main_gallery": evaluate_pred((c == 1).astype(int), main, pid),
+            "show_photos_demoted_to_second": int(np.sum((c == 1) & second)),
+            "show_photos_not_found": int(np.sum((c == 1) & (s < match_t))),
+            "background_in_main": int(np.sum((c == 2) & main)),
+            "background_in_second": int(np.sum((c == 2) & second)),
+            "background_not_found": int(np.sum((c == 2) & (s < match_t))),
+            "wrong_person_anywhere": int(np.sum((c == 0) & (s >= match_t))),
+        }
+    return out
+
+
+def confusion_pred(y, pred):
+    return (int(np.sum(pred & (y == 1))), int(np.sum(pred & (y == 0))), int(np.sum(~pred & (y == 1))))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", default="eval/out/baseline")
@@ -189,10 +255,12 @@ def main():
     ap.add_argument("--targets", default="eval/targets.json")
     ap.add_argument("--split", default="eval/split.json")
     ap.add_argument("--min-precision", type=float, default=TARGET_PRECISION)
+    ap.add_argument("--tier-feature", help="column of <run>/face_quality.csv; enables the two-section rule")
+    ap.add_argument("--tier-cutoff", type=float, help="fixed cutoff (default: tuned on TUNE)")
     args = ap.parse_args()
     run, labels_dir = Path(args.run), Path(args.labels)
     targets = json.loads(Path(args.targets).read_text())
-    scores = load_scores(run, targets)
+    scores, best_face = load_scores(run, targets)
 
     labels = {}
     for key, spec in targets.items():
@@ -217,7 +285,7 @@ def main():
         for photo, cls in lab.items():
             part = split.get(photo)
             if part is not None:
-                data[part].append((key, photo, cls, scores[key].get(photo, -1.0)))
+                data[part].append((key, photo, cls, scores[key].get(photo, -1.0), best_face[key].get(photo)))
     every = data["tune"] + data["test"]
 
     out = run / "metrics"
@@ -248,6 +316,8 @@ def main():
             write_csv(out / f"sweep_{task}_{part}.csv", sweeps[(part, task)])
             y, s, _, _ = task_arrays(data[part], task)
             write_csv(out / f"pr_{task}_{part}.csv", pr_rows(y, s))
+    if args.tier_feature:
+        report["two_sections"] = two_sections(run, data, PRODUCTION_THRESHOLD, args.tier_feature, args.tier_cutoff)
     (out / "report.json").write_text(json.dumps(report, indent=2))
 
     import matplotlib
