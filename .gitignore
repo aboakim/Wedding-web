@@ -4,3 +4,5 @@ data
 models
 __pycache__
 .env.local
+.venv
+eval/out
