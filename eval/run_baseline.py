@@ -79,6 +79,7 @@ def main():
             "production_selfie_mode": selfie_error or "ok",
             "ref_face_px": None if face is None else round(min(float(face.bbox[2] - face.bbox[0]), float(face.bbox[3] - face.bbox[1])), 1),
             "ref_det_score": None if face is None else round(float(face.det_score), 3),
+            "ref_bbox": None if face is None else [round(float(v), 1) for v in face.bbox],
         }
         if vec is None:
             print(f"WARNING: no reference face for {key}", file=sys.stderr)
