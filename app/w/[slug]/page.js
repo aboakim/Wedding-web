@@ -17,6 +17,7 @@ export default function GuestPage() {
   const [flags, setFlags] = useState({ allowDownloads: true, allowSharing: true, count: 0 });
   const [consent, setConsent] = useState(false);
   const [error, setError] = useState(null);
+  const [pick, setPick] = useState(null);
 
   useEffect(() => {
     let ignore = false;
@@ -61,7 +62,15 @@ export default function GuestPage() {
     }
   }
 
-  async function sendSelfie(blob) {
+  function clearPick() {
+    setPick((current) => {
+      if (current?.url) URL.revokeObjectURL(current.url);
+      return null;
+    });
+  }
+
+  // point: { x, y } in [0,1] of the image — the face the guest tapped.
+  async function sendSelfie(blob, point) {
     stop();
     setStep('searching');
     setError(null);
@@ -69,8 +78,17 @@ export default function GuestPage() {
     body.append('slug', slug);
     body.append('consent', 'yes');
     body.append('selfie', blob, 'selfie.jpg');
+    if (point) body.append('face', `${point.x.toFixed(4)},${point.y.toFixed(4)}`);
     const res = await fetch('/api/guest/selfie', { method: 'POST', body });
     const data = await res.json().catch(() => ({}));
+    if (!point && data?.error?.code === 'MULTIPLE' && Array.isArray(data.error.faces) && data.error.faces.length > 1) {
+      // Keep the photo only in this tab (never stored on the server) so the guest can tap a face.
+      clearPick();
+      setPick({ blob, url: URL.createObjectURL(blob), faces: data.error.faces });
+      setStep('pick');
+      return;
+    }
+    clearPick();
     if (!res.ok || !data.success) {
       setError(apiFault(data) || { key: 'guest.fail' });
       setStep('intro');
@@ -142,6 +160,25 @@ export default function GuestPage() {
           )}
           {step === 'camera' ? <button className="btn secondary phone-only" type="button" onClick={() => { stop(); setStep('intro'); }}>{t('guest.close')}</button> : null}
           {error ? <p className="err">{fault(error, 'guest.fail')}</p> : null}
+        </div>
+      ) : null}
+      {step === 'pick' && pick ? (
+        <div className="stack">
+          <p className="lead">{t('guest.pick')}</p>
+          <div className="pick-wrap">
+            <img src={pick.url} alt="" />
+            {pick.faces.map(([x1, y1, x2, y2], index) => (
+              <button
+                key={index}
+                type="button"
+                className="pick-face"
+                aria-label={t('guest.pickFace', { n: index + 1 })}
+                style={{ left: `${x1 * 100}%`, top: `${y1 * 100}%`, width: `${(x2 - x1) * 100}%`, height: `${(y2 - y1) * 100}%` }}
+                onClick={() => sendSelfie(pick.blob, { x: (x1 + x2) / 2, y: (y1 + y2) / 2 })}
+              />
+            ))}
+          </div>
+          <button className="btn secondary" type="button" onClick={() => { clearPick(); setStep('intro'); }}>{t('guest.pickCancel')}</button>
         </div>
       ) : null}
       {step === 'searching' ? <div className="stack"><div className="pulse" /><h2>{t('guest.searching')}</h2></div> : null}

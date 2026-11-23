@@ -11,13 +11,23 @@ export const dynamic = 'force-dynamic';
 
 const SESSION_SECONDS = 45 * 60;
 
+function parsePoint(value) {
+  const match = /^(\d(?:\.\d+)?),(\d(?:\.\d+)?)$/.exec(String(value || ''));
+  if (!match) return undefined;
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : undefined;
+}
+
 export const POST = route(async (req) => {
   const ip = clientIp(req);
-  if (!(await rateLimit(`selfie:${ip}`, 8, 3600))) return fail('RATE', 'Շատ փորձ եղավ։ Փորձեք մի փոքր ուշ։', 429);
+  // 16/h: choosing a face in a group photo costs a second request.
+  if (!(await rateLimit(`selfie:${ip}`, 16, 3600))) return fail('RATE', 'Շատ փորձ եղավ։ Փորձեք մի փոքր ուշ։', 429);
   const form = await req.formData();
   const slug = String(form.get('slug') || '');
   const consent = String(form.get('consent') || '');
   const file = form.get('selfie');
+  const point = parsePoint(form.get('face'));
   if (consent !== 'yes') return fail('CONSENT', 'Շարունակելու համար հաստատեք, որ համաձայն եք։', 400);
   if (!file || typeof file === 'string') return fail('SELFIE', 'Սելֆին չի ուղարկվել։', 400);
   const bytes = Buffer.from(await file.arrayBuffer());
@@ -40,21 +50,26 @@ export const POST = route(async (req) => {
   }
   let embedding;
   try {
-    embedding = await embedSelfie(bytes);
+    embedding = await embedSelfie(bytes, point);
   } catch (error) {
     bytes.fill(0);
+    if (error.code === 'MULTIPLE' && error.faces?.length >= 2) {
+      return fail('MULTIPLE', error.message, 422, { faces: error.faces });
+    }
     return fail('FACE', error.message, 422);
   }
   bytes.fill(0);
-  const photoIds = await matchFaces(row.id, embedding);
+  const matches = await matchFaces(row.id, embedding);
   embedding.fill(0);
+  const photoIds = matches.map((match) => match.photoId);
+  const scores = matches.map((match) => Math.round(match.score * 10000) / 10000);
   const policy = await query(`SELECT value FROM settings WHERE key = 'POLICY_VERSION'`);
   const raw = token();
   const sessionId = crypto.randomUUID();
   await query(
-    `INSERT INTO guest_sessions (id, token_hash, wedding_id, photo_ids, expires_at)
-     VALUES ($1,$2,$3,$4::uuid[], now() + ($5 * interval '1 second'))`,
-    [sessionId, sha256(raw), row.id, photoIds, SESSION_SECONDS],
+    `INSERT INTO guest_sessions (id, token_hash, wedding_id, photo_ids, photo_scores, expires_at)
+     VALUES ($1,$2,$3,$4::uuid[],$5::real[], now() + ($6 * interval '1 second'))`,
+    [sessionId, sha256(raw), row.id, photoIds, scores, SESSION_SECONDS],
   );
   await query(
     `INSERT INTO consents (id, guest_session_id, policy_version) VALUES ($1,$2,$3)`,

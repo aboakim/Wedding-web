@@ -5,11 +5,6 @@ const nextConfig = {
     'pg',
     '@electric-sql/pglite',
     '@electric-sql/pglite-socket',
-    '@vladmandic/face-api',
-    '@tensorflow/tfjs',
-    '@tensorflow/tfjs-backend-cpu',
-    '@tensorflow/tfjs-backend-wasm',
-    '@tensorflow/tfjs-core',
   ],
   async headers() {
     const headers = [

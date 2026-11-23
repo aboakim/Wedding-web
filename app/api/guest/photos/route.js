@@ -25,7 +25,7 @@ export const GET = route(async (req) => {
   const { rows } = await query(
     `SELECT id FROM photos
      WHERE id = ANY($1::uuid[]) AND wedding_id = $2 AND status = 'READY'
-     ORDER BY capture_time NULLS LAST, created_at
+     ORDER BY array_position($1::uuid[], id), capture_time NULLS LAST, created_at
      LIMIT $3 OFFSET $4`,
     [session.photo_ids, session.wedding_id, limit, (page - 1) * limit],
   );
