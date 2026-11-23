@@ -19,3 +19,4 @@ Reproduce a row: `node eval/preprocess.mjs <album> eval/out/pre <refs…>`,
 |---|---|---|---|---|---|---|---|
 | 0 | Baseline (production pipeline as of `96447c6`) | 0.750 / 1.000 | 1.000 / 0.857 | 0.857 / 0.923 | 65.4 s | `96447c6` | – |
 | 1 | #2 Return scores, results sorted best-first (SQL parity verified: same sets, Δscore ≤ 6e-8, 0.4 s/search) | 0.750 / 1.000 | 1.000 / 0.857 | 0.857 / 0.923 | 65.4 s (unchanged) | `779e3af` | Keep (no metric change expected) |
+| 2 | #1a Two sections by face focus at original resolution (sharp_orig ≥ 32.75, cutoff tuned on TUNE where it scored main F1 1.00). TEST: background-in-main 3 → 3, show demoted 0. Extra cost ≈ 32 s/album (reads originals) | 0.750 / 1.000 | 1.000 / 0.857 | 0.857 / 0.923 | 65.4 s + 31.8 s | `e06cc86` | **Revert** (no TEST gain; rule overfit 6 TUNE background photos) |
