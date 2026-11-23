@@ -46,15 +46,17 @@ export const POST = route(async (req) => {
     return fail('FACE', error.message, 422);
   }
   bytes.fill(0);
-  const photoIds = await matchFaces(row.id, embedding);
+  const matches = await matchFaces(row.id, embedding);
   embedding.fill(0);
+  const photoIds = matches.map((match) => match.photoId);
+  const scores = matches.map((match) => Math.round(match.score * 10000) / 10000);
   const policy = await query(`SELECT value FROM settings WHERE key = 'POLICY_VERSION'`);
   const raw = token();
   const sessionId = crypto.randomUUID();
   await query(
-    `INSERT INTO guest_sessions (id, token_hash, wedding_id, photo_ids, expires_at)
-     VALUES ($1,$2,$3,$4::uuid[], now() + ($5 * interval '1 second'))`,
-    [sessionId, sha256(raw), row.id, photoIds, SESSION_SECONDS],
+    `INSERT INTO guest_sessions (id, token_hash, wedding_id, photo_ids, photo_scores, expires_at)
+     VALUES ($1,$2,$3,$4::uuid[],$5::real[], now() + ($6 * interval '1 second'))`,
+    [sessionId, sha256(raw), row.id, photoIds, scores, SESSION_SECONDS],
   );
   await query(
     `INSERT INTO consents (id, guest_session_id, policy_version) VALUES ($1,$2,$3)`,
