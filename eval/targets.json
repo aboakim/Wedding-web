@@ -1,0 +1,5 @@
+{
+  "T1": { "ref": "photo_2026-11-21 01.15.31.jpeg", "pick": "left",  "kind": "selfie",       "exclude": [] },
+  "T2": { "ref": "photo_2026-11-21 01.15.31.jpeg", "pick": "right", "kind": "selfie-profile", "exclude": [] },
+  "T3": { "ref": "RAFO3389.jpg",                    "pick": "right", "kind": "album-photo",  "exclude": ["RAFO3389.jpg"] }
+}
